@@ -2,22 +2,19 @@
 /**
  * Plugin Name: YouTube Channel Filtered Grid
  * Description: Shortcode to show a grid of videos from a YouTube channel filtered by title keywords.
- * Version: 1.0.3
+ * Version: 1.0.4
  * Author: Strong Anchor Tech
  */
 
 if (!defined('ABSPATH')) exit;
 
 class YTCFG_Plugin {
-    // This plugin's own options
     const OPT_API_KEY         = 'ytcfg_api_key';
     const OPT_DEFAULT_CHANNEL = 'ytcfg_default_channel_id';
 
-    // Livestream Embedder options (fallback)
     const LS_OPT_API_KEY         = 'livestream_embedder_api_key';
     const LS_OPT_DEFAULT_CHANNEL = 'livestream_embedder_default_channel';
 
-    // If true: if ours are empty and LS has values, copy LS values into ours once.
     const MIRROR_LS_SETTINGS_IF_OURS_EMPTY = true;
 
     public static function init() {
@@ -57,7 +54,7 @@ class YTCFG_Plugin {
         wp_enqueue_style('ytcfg-inline');
         wp_add_inline_style('ytcfg-inline', $css);
 
-        wp_register_script('ytcfg-inline-js', '', [], '1.0.3', true);
+        wp_register_script('ytcfg-inline-js', '', [], '1.0.4', true);
         wp_enqueue_script('ytcfg-inline-js');
 
         $js = <<<JS
@@ -134,9 +131,6 @@ JS;
                 <strong>API key source:</strong> <?php echo esc_html($effective['api_key_source']); ?><br/>
                 <strong>Default channel source:</strong> <?php echo esc_html($effective['channel_source']); ?>
             </p>
-            <p class="description">
-                If the fields below are blank, this plugin will fall back to Livestream Embedder’s settings automatically.
-            </p>
 
             <form method="post" action="options.php">
                 <?php settings_fields('ytcfg'); ?>
@@ -148,7 +142,7 @@ JS;
                                    id="<?php echo esc_attr(self::OPT_API_KEY); ?>"
                                    name="<?php echo esc_attr(self::OPT_API_KEY); ?>"
                                    value="<?php echo esc_attr(get_option(self::OPT_API_KEY, '')); ?>" />
-                            <p class="description">If empty, falls back to option: <code><?php echo esc_html(self::LS_OPT_API_KEY); ?></code></p>
+                            <p class="description">If empty, falls back to: <code><?php echo esc_html(self::LS_OPT_API_KEY); ?></code></p>
                         </td>
                     </tr>
                     <tr>
@@ -158,7 +152,7 @@ JS;
                                    id="<?php echo esc_attr(self::OPT_DEFAULT_CHANNEL); ?>"
                                    name="<?php echo esc_attr(self::OPT_DEFAULT_CHANNEL); ?>"
                                    value="<?php echo esc_attr(get_option(self::OPT_DEFAULT_CHANNEL, '')); ?>" />
-                            <p class="description">If empty, falls back to option: <code><?php echo esc_html(self::LS_OPT_DEFAULT_CHANNEL); ?></code></p>
+                            <p class="description">If empty, falls back to: <code><?php echo esc_html(self::LS_OPT_DEFAULT_CHANNEL); ?></code></p>
                         </td>
                     </tr>
                 </table>
@@ -166,7 +160,7 @@ JS;
             </form>
 
             <h2>Shortcode</h2>
-            <p><code>[yt_channel_grid channel_id="UC..." include="term1|term2" include_mode="auto" exclude="term3|term4" match="any" order="oldest" max="24" cols="4" cache_minutes="120" scan_limit="2000"]</code></p>
+            <p><code>[yt_channel_grid include="listening to god|listening to god's" include_mode="or" match="any" order="oldest" max="24" cols="3"]</code></p>
         </div>
         <?php
     }
@@ -185,12 +179,8 @@ JS;
         $channel_source = ($our_channel !== '') ? 'ytcfg_default_channel_id (this plugin)' : (($ls_channel !== '') ? self::LS_OPT_DEFAULT_CHANNEL . ' (Livestream Embedder)' : 'none');
 
         if (self::MIRROR_LS_SETTINGS_IF_OURS_EMPTY) {
-            if ($our_api_key === '' && $ls_api_key !== '') {
-                update_option(self::OPT_API_KEY, $ls_api_key, false);
-            }
-            if ($our_channel === '' && $ls_channel !== '') {
-                update_option(self::OPT_DEFAULT_CHANNEL, $ls_channel, false);
-            }
+            if ($our_api_key === '' && $ls_api_key !== '') update_option(self::OPT_API_KEY, $ls_api_key, false);
+            if ($our_channel === '' && $ls_channel !== '') update_option(self::OPT_DEFAULT_CHANNEL, $ls_channel, false);
         }
 
         return [
@@ -212,29 +202,24 @@ JS;
             'max'            => '24',
             'cols'           => '4',
             'cache_minutes'  => '120',
-            'scan_limit'     => '2000',    // max uploads items to scan when order=oldest
+            'scan_limit'     => '2000',
         ], $atts, 'yt_channel_grid');
 
         $effective = self::get_effective_settings();
         $api_key = $effective['api_key'];
-        if ($api_key === '') {
-            return self::err('Missing API key. Set it in Settings → YouTube Filtered Grid (or in Livestream Embedder).');
-        }
+        if ($api_key === '') return self::err('Missing API key.');
 
         $channel_id = trim((string) $atts['channel_id']);
         if ($channel_id === '') $channel_id = $effective['channel'];
-        if ($channel_id === '') {
-            return self::err('Missing channel_id. Provide it in the shortcode or set a default in settings (or in Livestream Embedder).');
-        }
+        if ($channel_id === '') return self::err('Missing channel_id.');
 
         $max = max(1, min(200, intval($atts['max'])));
         $cols = max(1, min(8, intval($atts['cols'])));
         $cache_minutes = max(1, min(10080, intval($atts['cache_minutes'])));
+        $scan_limit = max(50, min(50000, intval($atts['scan_limit'])));
 
         $order = strtolower(trim((string)$atts['order']));
         $order = ($order === 'newest') ? 'newest' : 'oldest';
-
-        $scan_limit = max(50, min(50000, intval($atts['scan_limit']))); // safety bounds
 
         $match = strtolower(trim((string) $atts['match'])) === 'all' ? 'all' : 'any';
 
@@ -252,14 +237,10 @@ JS;
         ]));
 
         $cached = get_transient($cache_key);
-        if (is_array($cached)) {
-            return self::render_grid($cached, $cols);
-        }
+        if (is_array($cached)) return self::render_grid($cached, $cols);
 
         $uploads_playlist_id = self::get_uploads_playlist_id($api_key, $channel_id);
-        if (is_wp_error($uploads_playlist_id)) {
-            return self::err($uploads_playlist_id->get_error_message());
-        }
+        if (is_wp_error($uploads_playlist_id)) return self::err($uploads_playlist_id->get_error_message());
 
         $videos = self::fetch_and_filter_playlist_videos(
             $api_key,
@@ -272,19 +253,27 @@ JS;
             $scan_limit
         );
 
-        if (is_wp_error($videos)) {
-            return self::err($videos->get_error_message());
-        }
+        if (is_wp_error($videos)) return self::err($videos->get_error_message());
 
         set_transient($cache_key, $videos, $cache_minutes * MINUTE_IN_SECONDS);
-
         return self::render_grid($videos, $cols);
     }
 
-    private static function normalize_term($t) {
-        $t = trim((string)$t);
-        if ($t === '') return '';
-        return function_exists('mb_strtolower') ? mb_strtolower($t, 'UTF-8') : strtolower($t);
+    private static function normalize_text($s) {
+        $s = (string)$s;
+
+        // Decode entities just in case (titles can include &amp; etc.)
+        $s = html_entity_decode($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+        // Normalize apostrophes/quotes to straight variants
+        $search = ["’","‘","‛","`","´","“","”","„","‟"];
+        $replace = ["'","'","'","'","'","\"","\"","\"","\""];
+        $s = str_replace($search, $replace, $s);
+
+        $s = trim($s);
+        if ($s === '') return '';
+
+        return function_exists('mb_strtolower') ? mb_strtolower($s, 'UTF-8') : strtolower($s);
     }
 
     private static function split_terms_or($raw) {
@@ -292,7 +281,18 @@ JS;
         $parts = array_filter(array_map('trim', explode('|', $raw)), function($v){ return $v !== ''; });
         $out = [];
         foreach ($parts as $p) {
-            $n = self::normalize_term($p);
+            $n = self::normalize_text($p);
+            if ($n !== '') $out[] = $n;
+        }
+        return $out;
+    }
+
+    private static function split_terms_words($raw) {
+        $raw = (string) $raw;
+        $parts = preg_split('/\s+/u', trim($raw));
+        $out = [];
+        foreach ($parts as $p) {
+            $n = self::normalize_text($p);
             if ($n !== '') $out[] = $n;
         }
         return $out;
@@ -304,10 +304,12 @@ JS;
 
         $mode = strtolower(trim((string)$mode));
         if ($mode === 'phrase') {
-            return [ self::normalize_term($raw) ];
+            // Exactly one phrase (no | splitting)
+            return [ self::normalize_text($raw) ];
         }
 
         if ($mode === 'or') {
+            // Split by | into phrases
             return self::split_terms_or($raw);
         }
 
@@ -315,23 +317,10 @@ JS;
             return self::split_terms_words($raw);
         }
 
-        // auto
-        if (strpos($raw, '|') !== false) {
-            return self::split_terms_or($raw);
-        }
-
+        // auto:
+        // If contains | => treat as OR phrases, else split into words
+        if (strpos($raw, '|') !== false) return self::split_terms_or($raw);
         return self::split_terms_words($raw);
-    }
-
-    private static function split_terms_words($raw) {
-        $raw = (string) $raw;
-        $parts = preg_split('/\s+/u', trim($raw));
-        $out = [];
-        foreach ($parts as $p) {
-            $n = self::normalize_term($p);
-            if ($n !== '') $out[] = $n;
-        }
-        return $out;
     }
 
     private static function title_contains_all($title_lc, $terms) {
@@ -384,12 +373,6 @@ JS;
         return $items[0]['contentDetails']['relatedPlaylists']['uploads'];
     }
 
-    /**
-     * NOTE on ordering:
-     * - YouTube uploads playlist returns newest -> oldest.
-     * - order=newest: we stop once we have $max matches.
-     * - order=oldest: we scan up to $scan_limit uploads to find matches, then reverse matches and take the oldest $max.
-     */
     private static function fetch_and_filter_playlist_videos($api_key, $playlist_id, $include_terms, $exclude_terms, $match, $order, $max, $scan_limit) {
         $videos = [];
         $page_token = '';
@@ -421,9 +404,7 @@ JS;
 
             foreach ($items as $it) {
                 $scanned++;
-                if ($order === 'oldest' && $scanned > $scan_limit) {
-                    break 2;
-                }
+                if ($order === 'oldest' && $scanned > $scan_limit) break 2;
 
                 $sn = $it['snippet'] ?? null;
                 if (!is_array($sn)) continue;
@@ -432,11 +413,9 @@ JS;
                 $video_id = (string) ($sn['resourceId']['videoId'] ?? '');
                 if ($video_id === '' || $title === '') continue;
 
-                $title_lc = function_exists('mb_strtolower') ? mb_strtolower($title, 'UTF-8') : strtolower($title);
+                $title_lc = self::normalize_text($title);
 
-                if (!empty($exclude_terms) && self::title_contains_any($title_lc, $exclude_terms)) {
-                    continue;
-                }
+                if (!empty($exclude_terms) && self::title_contains_any($title_lc, $exclude_terms)) continue;
 
                 if (!empty($include_terms)) {
                     if ($match === 'all') {
@@ -453,9 +432,7 @@ JS;
                     'thumb'    => (string) $thumb,
                 ];
 
-                if ($order === 'newest' && count($videos) >= $max) {
-                    break 2;
-                }
+                if ($order === 'newest' && count($videos) >= $max) break 2;
             }
 
             $page_token = (string) ($json['nextPageToken'] ?? '');
@@ -463,20 +440,15 @@ JS;
         }
 
         if ($order === 'oldest') {
-            // We collected matches in newest->oldest order as we scanned; reverse to oldest->newest.
             $videos = array_reverse($videos);
-            if (count($videos) > $max) {
-                $videos = array_slice($videos, 0, $max);
-            }
+            if (count($videos) > $max) $videos = array_slice($videos, 0, $max);
         }
 
         return $videos;
     }
 
     private static function render_grid($videos, $cols) {
-        if (empty($videos)) {
-            return '<div class="ytcfg-empty">No videos matched your filter.</div>';
-        }
+        if (empty($videos)) return '<div class="ytcfg-empty">No videos matched your filter.</div>';
 
         $style = 'style="grid-template-columns:repeat(' . intval($cols) . ',minmax(0,1fr))"';
 
@@ -488,9 +460,7 @@ JS;
 
             $out .= '<div class="ytcfg-card" role="button" tabindex="0" data-video-id="' . $vid . '">';
             $out .=   '<div class="ytcfg-thumbwrap">';
-            if ($thumb !== '') {
-                $out .=   '<img class="ytcfg-thumb" src="' . $thumb . '" alt="' . $title . '"/>';
-            }
+            if ($thumb !== '') $out .= '<img class="ytcfg-thumb" src="' . $thumb . '" alt="' . $title . '"/>';
             $out .=     '<div class="ytcfg-play"><div class="ytcfg-playbtn" aria-hidden="true"></div></div>';
             $out .=   '</div>';
             $out .=   '<div class="ytcfg-title">' . $title . '</div>';
