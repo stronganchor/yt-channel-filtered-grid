@@ -2,7 +2,7 @@
 /**
  * Plugin Name: YouTube Channel Filtered Grid
  * Description: Shortcode to show a grid of videos from a YouTube channel filtered by title keywords.
- * Version: 1.0.2
+ * Version: 1.0.3
  * Author: Strong Anchor Tech
  */
 
@@ -28,7 +28,6 @@ class YTCFG_Plugin {
     }
 
     public static function enqueue_assets() {
-        // CSS (includes play overlay + responsive iframe)
         $css = "
         .ytcfg-grid{display:grid;gap:16px}
         .ytcfg-card{display:block;text-decoration:none;color:inherit;cursor:pointer}
@@ -58,8 +57,7 @@ class YTCFG_Plugin {
         wp_enqueue_style('ytcfg-inline');
         wp_add_inline_style('ytcfg-inline', $css);
 
-        // JS: swap clicked card to an in-place YouTube embed iframe
-        wp_register_script('ytcfg-inline-js', '', [], '1.0.2', true);
+        wp_register_script('ytcfg-inline-js', '', [], '1.0.3', true);
         wp_enqueue_script('ytcfg-inline-js');
 
         $js = <<<JS
@@ -76,7 +74,6 @@ class YTCFG_Plugin {
         var card = closest(e.target, '.ytcfg-card');
         if (!card) return;
 
-        // If already replaced with iframe, do nothing
         if (card.getAttribute('data-ytcfg-playing') === '1') return;
 
         var vid = card.getAttribute('data-video-id');
@@ -84,7 +81,6 @@ class YTCFG_Plugin {
 
         e.preventDefault();
 
-        // Replace thumbnail with iframe
         card.setAttribute('data-ytcfg-playing', '1');
         var titleEl = card.querySelector('.ytcfg-title');
         var titleHtml = titleEl ? titleEl.outerHTML : '';
@@ -170,14 +166,7 @@ JS;
             </form>
 
             <h2>Shortcode</h2>
-            <p><code>[yt_channel_grid channel_id="UC..." include="term1|term2" include_mode="auto" exclude="term3|term4" match="any" max="24" cols="4" cache_minutes="120"]</code></p>
-            <p class="description">
-                include_mode:
-                <code>auto</code> (default) = if include contains <code>|</code> then OR-terms, otherwise split into words;
-                <code>phrase</code> = treat include as one exact phrase;
-                <code>or</code> = split only on <code>|</code>;
-                <code>words</code> = split on spaces.
-            </p>
+            <p><code>[yt_channel_grid channel_id="UC..." include="term1|term2" include_mode="auto" exclude="term3|term4" match="any" order="oldest" max="24" cols="4" cache_minutes="120" scan_limit="2000"]</code></p>
         </div>
         <?php
     }
@@ -216,12 +205,14 @@ JS;
         $atts = shortcode_atts([
             'channel_id'     => '',
             'include'        => '',
-            'include_mode'   => 'auto',   // auto|phrase|or|words
+            'include_mode'   => 'auto',    // auto|phrase|or|words
             'exclude'        => '',
-            'match'          => 'any',    // any|all
+            'match'          => 'any',     // any|all
+            'order'          => 'oldest',  // oldest|newest
             'max'            => '24',
             'cols'           => '4',
             'cache_minutes'  => '120',
+            'scan_limit'     => '2000',    // max uploads items to scan when order=oldest
         ], $atts, 'yt_channel_grid');
 
         $effective = self::get_effective_settings();
@@ -240,17 +231,24 @@ JS;
         $cols = max(1, min(8, intval($atts['cols'])));
         $cache_minutes = max(1, min(10080, intval($atts['cache_minutes'])));
 
+        $order = strtolower(trim((string)$atts['order']));
+        $order = ($order === 'newest') ? 'newest' : 'oldest';
+
+        $scan_limit = max(50, min(50000, intval($atts['scan_limit']))); // safety bounds
+
         $match = strtolower(trim((string) $atts['match'])) === 'all' ? 'all' : 'any';
 
         $include_terms = self::parse_include_terms($atts['include'], $atts['include_mode']);
-        $exclude_terms = self::split_terms_or($atts['exclude']); // exclude always uses | OR semantics
+        $exclude_terms = self::split_terms_or($atts['exclude']);
 
         $cache_key = 'ytcfg_' . md5(wp_json_encode([
             'channel_id' => $channel_id,
             'include' => $include_terms,
             'exclude' => $exclude_terms,
             'match' => $match,
+            'order' => $order,
             'max' => $max,
+            'scan_limit' => $scan_limit,
         ]));
 
         $cached = get_transient($cache_key);
@@ -269,7 +267,9 @@ JS;
             $include_terms,
             $exclude_terms,
             $match,
-            $max
+            $order,
+            $max,
+            $scan_limit
         );
 
         if (is_wp_error($videos)) {
@@ -287,7 +287,6 @@ JS;
         return function_exists('mb_strtolower') ? mb_strtolower($t, 'UTF-8') : strtolower($t);
     }
 
-    // Exclude: split only on | (OR semantics)
     private static function split_terms_or($raw) {
         $raw = (string) $raw;
         $parts = array_filter(array_map('trim', explode('|', $raw)), function($v){ return $v !== ''; });
@@ -299,13 +298,6 @@ JS;
         return $out;
     }
 
-    /**
-     * include_mode:
-     * - phrase: treat entire include string as one term (exact substring match)
-     * - or: split only by |
-     * - words: split by whitespace
-     * - auto (default): if include contains | => OR terms; else split by whitespace (so "new start series" becomes 3 terms)
-     */
     private static function parse_include_terms($raw, $mode) {
         $raw = trim((string) $raw);
         if ($raw === '') return [];
@@ -392,11 +384,18 @@ JS;
         return $items[0]['contentDetails']['relatedPlaylists']['uploads'];
     }
 
-    private static function fetch_and_filter_playlist_videos($api_key, $playlist_id, $include_terms, $exclude_terms, $match, $max) {
+    /**
+     * NOTE on ordering:
+     * - YouTube uploads playlist returns newest -> oldest.
+     * - order=newest: we stop once we have $max matches.
+     * - order=oldest: we scan up to $scan_limit uploads to find matches, then reverse matches and take the oldest $max.
+     */
+    private static function fetch_and_filter_playlist_videos($api_key, $playlist_id, $include_terms, $exclude_terms, $match, $order, $max, $scan_limit) {
         $videos = [];
         $page_token = '';
+        $scanned = 0;
 
-        while (count($videos) < $max) {
+        while (true) {
             $args = [
                 'part'       => 'snippet',
                 'playlistId' => $playlist_id,
@@ -418,7 +417,14 @@ JS;
             }
 
             $items = $json['items'] ?? [];
+            if (empty($items)) break;
+
             foreach ($items as $it) {
+                $scanned++;
+                if ($order === 'oldest' && $scanned > $scan_limit) {
+                    break 2;
+                }
+
                 $sn = $it['snippet'] ?? null;
                 if (!is_array($sn)) continue;
 
@@ -428,12 +434,10 @@ JS;
 
                 $title_lc = function_exists('mb_strtolower') ? mb_strtolower($title, 'UTF-8') : strtolower($title);
 
-                // Exclude
                 if (!empty($exclude_terms) && self::title_contains_any($title_lc, $exclude_terms)) {
                     continue;
                 }
 
-                // Include
                 if (!empty($include_terms)) {
                     if ($match === 'all') {
                         if (!self::title_contains_all($title_lc, $include_terms)) continue;
@@ -449,11 +453,21 @@ JS;
                     'thumb'    => (string) $thumb,
                 ];
 
-                if (count($videos) >= $max) break;
+                if ($order === 'newest' && count($videos) >= $max) {
+                    break 2;
+                }
             }
 
             $page_token = (string) ($json['nextPageToken'] ?? '');
             if ($page_token === '') break;
+        }
+
+        if ($order === 'oldest') {
+            // We collected matches in newest->oldest order as we scanned; reverse to oldest->newest.
+            $videos = array_reverse($videos);
+            if (count($videos) > $max) {
+                $videos = array_slice($videos, 0, $max);
+            }
         }
 
         return $videos;
