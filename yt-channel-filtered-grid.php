@@ -2,7 +2,7 @@
 /**
  * Plugin Name: YouTube Channel Filtered Grid
  * Description: Shortcode to show a grid of videos from a YouTube channel filtered by title keywords.
- * Version: 1.0.4
+ * Version: 1.0.6
  * Author: Strong Anchor Tech
  */
 
@@ -16,6 +16,13 @@ class YTCFG_Plugin {
     const LS_OPT_DEFAULT_CHANNEL = 'livestream_embedder_default_channel';
 
     const MIRROR_LS_SETTINGS_IF_OURS_EMPTY = true;
+
+    // Bump this when logic changes so cached transients naturally invalidate.
+    const VERSION = '1.0.6';
+
+    // Admin auto-refresh throttle: even admins will use cached results if cache age < this.
+    // (Implemented by forcing a minimum cache_minutes of 2 for admins.)
+    const ADMIN_MIN_CACHE_MINUTES = 2;
 
     public static function init() {
         add_action('admin_menu', [__CLASS__, 'admin_menu']);
@@ -54,7 +61,7 @@ class YTCFG_Plugin {
         wp_enqueue_style('ytcfg-inline');
         wp_add_inline_style('ytcfg-inline', $css);
 
-        wp_register_script('ytcfg-inline-js', '', [], '1.0.4', true);
+        wp_register_script('ytcfg-inline-js', '', [], self::VERSION, true);
         wp_enqueue_script('ytcfg-inline-js');
 
         $js = <<<JS
@@ -215,7 +222,7 @@ JS;
 
         $max = max(1, min(200, intval($atts['max'])));
         $cols = max(1, min(8, intval($atts['cols'])));
-        $cache_minutes = max(1, min(10080, intval($atts['cache_minutes'])));
+        $cache_minutes = max(0, min(10080, intval($atts['cache_minutes'])));
         $scan_limit = max(50, min(50000, intval($atts['scan_limit'])));
 
         $order = strtolower(trim((string)$atts['order']));
@@ -226,7 +233,16 @@ JS;
         $include_terms = self::parse_include_terms($atts['include'], $atts['include_mode']);
         $exclude_terms = self::split_terms_or($atts['exclude']);
 
+        // Admin refresh behavior:
+        // - Admins *do not* bypass caching completely.
+        // - Instead, enforce a small minimum cache window so rapid refreshes/page hopping won't hammer the API.
+        $is_admin_view = (is_user_logged_in() && current_user_can('manage_options'));
+        if ($is_admin_view && $cache_minutes < self::ADMIN_MIN_CACHE_MINUTES) {
+            $cache_minutes = self::ADMIN_MIN_CACHE_MINUTES;
+        }
+
         $cache_key = 'ytcfg_' . md5(wp_json_encode([
+            'v' => self::VERSION,
             'channel_id' => $channel_id,
             'include' => $include_terms,
             'exclude' => $exclude_terms,
@@ -236,8 +252,14 @@ JS;
             'scan_limit' => $scan_limit,
         ]));
 
-        $cached = get_transient($cache_key);
-        if (is_array($cached)) return self::render_grid($cached, $cols);
+        // Cache read logic:
+        // - Visitors: use cache if available.
+        // - Admins: use cache if available, but because admins often want "fresh",
+        //   set cache_minutes small on those pages (e.g., 2) so it refreshes quickly.
+        if ($cache_minutes > 0) {
+            $cached = get_transient($cache_key);
+            if (is_array($cached)) return self::render_grid($cached, $cols);
+        }
 
         $uploads_playlist_id = self::get_uploads_playlist_id($api_key, $channel_id);
         if (is_wp_error($uploads_playlist_id)) return self::err($uploads_playlist_id->get_error_message());
@@ -255,7 +277,10 @@ JS;
 
         if (is_wp_error($videos)) return self::err($videos->get_error_message());
 
-        set_transient($cache_key, $videos, $cache_minutes * MINUTE_IN_SECONDS);
+        if ($cache_minutes > 0) {
+            set_transient($cache_key, $videos, $cache_minutes * MINUTE_IN_SECONDS);
+        }
+
         return self::render_grid($videos, $cols);
     }
 
@@ -373,8 +398,34 @@ JS;
         return $items[0]['contentDetails']['relatedPlaylists']['uploads'];
     }
 
+    /**
+     * Duplicate handling for "mobile" re-uploads:
+     * If two videos have the same title except one includes the 📱 emoji,
+     * keep the non-📱 title version and drop the 📱 version.
+     */
+    private static function has_mobile_marker($title) {
+        return (strpos((string)$title, "📱") !== false);
+    }
+
+    private static function dupe_key_for_title($title) {
+        // Lowercase + entity decode + normalized quotes
+        $t = self::normalize_text((string)$title);
+
+        // Remove the phone emoji (and common variation selector if present)
+        // Note: FE0F is a variation selector that can appear with some emoji sequences.
+        $t = str_replace(["📱", "\u{FE0F}"], '', $t);
+
+        // Collapse whitespace
+        $t = preg_replace('/\s+/u', ' ', trim($t));
+
+        return $t;
+    }
+
     private static function fetch_and_filter_playlist_videos($api_key, $playlist_id, $include_terms, $exclude_terms, $match, $order, $max, $scan_limit) {
-        $videos = [];
+        $picked_by_key = [];   // key => ['video' => [...], 'is_mobile' => bool]
+        $key_order = [];       // preserves first-seen order of unique titles
+        $mobile_only_count = 0;
+
         $page_token = '';
         $scanned = 0;
 
@@ -404,7 +455,7 @@ JS;
 
             foreach ($items as $it) {
                 $scanned++;
-                if ($order === 'oldest' && $scanned > $scan_limit) break 2;
+                if ($scanned > $scan_limit) break 2;
 
                 $sn = $it['snippet'] ?? null;
                 if (!is_array($sn)) continue;
@@ -426,22 +477,57 @@ JS;
                 }
 
                 $thumb = $sn['thumbnails']['high']['url'] ?? ($sn['thumbnails']['medium']['url'] ?? '');
-                $videos[] = [
+                $video = [
                     'video_id' => $video_id,
                     'title'    => $title,
                     'thumb'    => (string) $thumb,
                 ];
 
-                if ($order === 'newest' && count($videos) >= $max) break 2;
+                $is_mobile = self::has_mobile_marker($title);
+                $key = self::dupe_key_for_title($title);
+                if ($key === '') continue;
+
+                if (!isset($picked_by_key[$key])) {
+                    $picked_by_key[$key] = [
+                        'video' => $video,
+                        'is_mobile' => $is_mobile,
+                    ];
+                    $key_order[] = $key;
+                    if ($is_mobile) $mobile_only_count++;
+                } else {
+                    // If we already have a mobile version and we now see a non-mobile version, prefer non-mobile.
+                    if ($picked_by_key[$key]['is_mobile'] && !$is_mobile) {
+                        $picked_by_key[$key]['video'] = $video;
+                        $picked_by_key[$key]['is_mobile'] = false;
+                        $mobile_only_count = max(0, $mobile_only_count - 1);
+                    }
+                    // Otherwise keep the first-seen entry (newer in playlist order).
+                }
+
+                $unique_count = count($key_order);
+
+                // For newest: stop once we have enough unique videos AND none are mobile-only placeholders.
+                if ($order === 'newest') {
+                    if ($unique_count >= $max && $mobile_only_count === 0) break 2;
+                }
             }
 
             $page_token = (string) ($json['nextPageToken'] ?? '');
             if ($page_token === '') break;
         }
 
+        // Rebuild ordered list
+        $videos = [];
+        foreach ($key_order as $k) {
+            if (isset($picked_by_key[$k]['video'])) $videos[] = $picked_by_key[$k]['video'];
+        }
+
         if ($order === 'oldest') {
             $videos = array_reverse($videos);
-            if (count($videos) > $max) $videos = array_slice($videos, 0, $max);
+        }
+
+        if (count($videos) > $max) {
+            $videos = array_slice($videos, 0, $max);
         }
 
         return $videos;
