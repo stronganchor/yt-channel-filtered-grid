@@ -2,7 +2,7 @@
 /**
  * Plugin Name: YouTube Channel Filtered Grid
  * Description: Shortcode to show a grid of videos from a YouTube channel filtered by title keywords.
- * Version: 1.0.6
+ * Version: 1.0.7
  * Update URI: https://github.com/stronganchor/yt-channel-filtered-grid
  * Author: Strong Anchor Tech
  */
