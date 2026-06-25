@@ -2,7 +2,7 @@
 /**
  * Plugin Name: YouTube Channel Filtered Grid
  * Description: Shortcode to show a grid of videos from a YouTube channel filtered by title keywords.
- * Version: 1.0.7
+ * Version: 1.0.8
  * Update URI: https://github.com/stronganchor/yt-channel-filtered-grid
  * Author: Strong Anchor Tech
  */
@@ -70,7 +70,7 @@ class YTCFG_Plugin {
     const MIRROR_LS_SETTINGS_IF_OURS_EMPTY = true;
 
     // Bump this when logic changes so cached transients naturally invalidate.
-    const VERSION = '1.0.6';
+    const VERSION = '1.0.8';
 
     // Admin auto-refresh throttle: even admins will use cached results if cache age < this.
     // (Implemented by forcing a minimum cache_minutes of 2 for admins.)
@@ -219,7 +219,7 @@ JS;
             </form>
 
             <h2>Shortcode</h2>
-            <p><code>[yt_channel_grid include="listening to god|listening to god's" include_mode="or" match="any" order="oldest" max="24" cols="3"]</code></p>
+            <p><code>[yt_channel_grid include="listening to god|listening to god's" include_mode="or" match="any" exclude_ids="VIDEO_ID" order="oldest" max="24" cols="3"]</code></p>
         </div>
         <?php
     }
@@ -256,6 +256,7 @@ JS;
             'include'        => '',
             'include_mode'   => 'auto',    // auto|phrase|or|words
             'exclude'        => '',
+            'exclude_ids'    => '',
             'match'          => 'any',     // any|all
             'order'          => 'oldest',  // oldest|newest
             'max'            => '24',
@@ -284,6 +285,7 @@ JS;
 
         $include_terms = self::parse_include_terms($atts['include'], $atts['include_mode']);
         $exclude_terms = self::split_terms_or($atts['exclude']);
+        $exclude_ids = self::parse_video_ids($atts['exclude_ids']);
 
         // Admin refresh behavior:
         // - Admins *do not* bypass caching completely.
@@ -298,6 +300,7 @@ JS;
             'channel_id' => $channel_id,
             'include' => $include_terms,
             'exclude' => $exclude_terms,
+            'exclude_ids' => $exclude_ids,
             'match' => $match,
             'order' => $order,
             'max' => $max,
@@ -321,6 +324,7 @@ JS;
             $uploads_playlist_id,
             $include_terms,
             $exclude_terms,
+            $exclude_ids,
             $match,
             $order,
             $max,
@@ -373,6 +377,60 @@ JS;
             if ($n !== '') $out[] = $n;
         }
         return $out;
+    }
+
+    private static function parse_video_ids($raw) {
+        $raw = trim((string) $raw);
+        if ($raw === '') return [];
+
+        $parts = preg_split('/[\s,|]+/', $raw);
+        $ids = [];
+
+        foreach ($parts as $part) {
+            $part = trim((string) $part);
+            if ($part === '') continue;
+
+            $id = self::extract_video_id($part);
+            if ($id !== '') $ids[$id] = true;
+        }
+
+        return array_keys($ids);
+    }
+
+    private static function extract_video_id($value) {
+        $value = trim((string) $value);
+        if ($value === '') return '';
+
+        $decoded = html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $parts = wp_parse_url($decoded);
+
+        if (is_array($parts)) {
+            if (!empty($parts['query'])) {
+                parse_str($parts['query'], $query);
+                if (!empty($query['v']) && is_string($query['v'])) {
+                    $candidate = trim($query['v']);
+                    if (preg_match('/^[A-Za-z0-9_-]+$/', $candidate)) return $candidate;
+                }
+            }
+
+            if (!empty($parts['path'])) {
+                $segments = array_values(array_filter(explode('/', trim($parts['path'], '/'))));
+                if (!empty($segments)) {
+                    $host = strtolower((string) ($parts['host'] ?? ''));
+                    if (in_array($host, ['youtu.be', 'www.youtu.be'], true)) {
+                        $candidate = end($segments);
+                    } else {
+                        $candidate = end($segments);
+                    }
+
+                    if (is_string($candidate) && preg_match('/^[A-Za-z0-9_-]+$/', $candidate)) return $candidate;
+                }
+            }
+        }
+
+        if (preg_match('/^[A-Za-z0-9_-]+$/', $decoded)) return $decoded;
+
+        return '';
     }
 
     private static function parse_include_terms($raw, $mode) {
@@ -473,7 +531,7 @@ JS;
         return $t;
     }
 
-    private static function fetch_and_filter_playlist_videos($api_key, $playlist_id, $include_terms, $exclude_terms, $match, $order, $max, $scan_limit) {
+    private static function fetch_and_filter_playlist_videos($api_key, $playlist_id, $include_terms, $exclude_terms, $exclude_ids, $match, $order, $max, $scan_limit) {
         $picked_by_key = [];   // key => ['video' => [...], 'is_mobile' => bool]
         $key_order = [];       // preserves first-seen order of unique titles
         $mobile_only_count = 0;
@@ -515,6 +573,8 @@ JS;
                 $title = (string) ($sn['title'] ?? '');
                 $video_id = (string) ($sn['resourceId']['videoId'] ?? '');
                 if ($video_id === '' || $title === '') continue;
+
+                if (!empty($exclude_ids) && in_array($video_id, $exclude_ids, true)) continue;
 
                 $title_lc = self::normalize_text($title);
 
