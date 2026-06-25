@@ -2,7 +2,7 @@
 /**
  * Plugin Name: YouTube Channel Filtered Grid
  * Description: Shortcode to show a grid of videos from a YouTube channel filtered by title keywords.
- * Version: 1.0.8
+ * Version: 1.0.9
  * Update URI: https://github.com/stronganchor/yt-channel-filtered-grid
  * Author: Strong Anchor Tech
  */
@@ -70,7 +70,7 @@ class YTCFG_Plugin {
     const MIRROR_LS_SETTINGS_IF_OURS_EMPTY = true;
 
     // Bump this when logic changes so cached transients naturally invalidate.
-    const VERSION = '1.0.8';
+    const VERSION = '1.0.9';
 
     // Admin auto-refresh throttle: even admins will use cached results if cache age < this.
     // (Implemented by forcing a minimum cache_minutes of 2 for admins.)
@@ -430,6 +430,8 @@ JS;
 
         if (preg_match('/^[A-Za-z0-9_-]+$/', $decoded)) return $decoded;
 
+        if (preg_match('/[A-Za-z0-9_-]{11}/', $decoded, $match)) return $match[0];
+
         return '';
     }
 
@@ -571,7 +573,7 @@ JS;
                 if (!is_array($sn)) continue;
 
                 $title = (string) ($sn['title'] ?? '');
-                $video_id = (string) ($sn['resourceId']['videoId'] ?? '');
+                $video_id = trim((string) ($sn['resourceId']['videoId'] ?? ''));
                 if ($video_id === '' || $title === '') continue;
 
                 if (!empty($exclude_ids) && in_array($video_id, $exclude_ids, true)) continue;
