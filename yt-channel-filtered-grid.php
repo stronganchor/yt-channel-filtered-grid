@@ -2,7 +2,7 @@
 /**
  * Plugin Name: YouTube Channel Filtered Grid
  * Description: Shortcode to show a grid of videos from a YouTube channel filtered by title keywords.
- * Version: 1.0.9
+ * Version: 1.0.10
  * Update URI: https://github.com/stronganchor/yt-channel-filtered-grid
  * Author: Strong Anchor Tech
  */
@@ -70,7 +70,7 @@ class YTCFG_Plugin {
     const MIRROR_LS_SETTINGS_IF_OURS_EMPTY = true;
 
     // Bump this when logic changes so cached transients naturally invalidate.
-    const VERSION = '1.0.9';
+    const VERSION = '1.0.10';
 
     // Admin auto-refresh throttle: even admins will use cached results if cache age < this.
     // (Implemented by forcing a minimum cache_minutes of 2 for admins.)
@@ -197,10 +197,11 @@ JS;
                     <tr>
                         <th scope="row"><label for="<?php echo esc_attr(self::OPT_API_KEY); ?>">YouTube Data API Key</label></th>
                         <td>
-                            <input type="text" class="regular-text"
+                            <input type="password" class="regular-text"
                                    id="<?php echo esc_attr(self::OPT_API_KEY); ?>"
                                    name="<?php echo esc_attr(self::OPT_API_KEY); ?>"
-                                   value="<?php echo esc_attr(get_option(self::OPT_API_KEY, '')); ?>" />
+                                   value="<?php echo esc_attr(get_option(self::OPT_API_KEY, '')); ?>"
+                                   autocomplete="off" />
                             <p class="description">If empty, falls back to: <code><?php echo esc_html(self::LS_OPT_API_KEY); ?></code></p>
                         </td>
                     </tr>
